@@ -13,7 +13,7 @@ def listing(db=Depends(get_db),u=Depends(current_user)):
     return [job_dict(j) for j in db.scalars(select(Job).order_by(Job.id.desc()).limit(100))]
 @router.post('',status_code=201)
 def create(data:JobInput,db=Depends(get_db),u=Depends(can_write)):
-    j=jobs.create(db,data,u); record(db,u.email,'job.create',{'id':j.id,'params':j.params})
+    j=jobs.create(db,data,u); record(db,u.email,'job.create',{'id':j.id,'params':j.params,'constraint_version_id':j.constraint_version_id})
     db.commit(); jobs.enqueue(j.id); return job_dict(j)
 @router.get('/{id}')
 def detail(id:int,db=Depends(get_db),u=Depends(current_user)):
@@ -24,6 +24,6 @@ def detail(id:int,db=Depends(get_db),u=Depends(current_user)):
 def approve(id:int,db=Depends(get_db),u=Depends(admin_only)):
     j=db.get(Job,id)
     if not j: raise HTTPException(404,'分析任务不存在')
-    if j.status!='completed':raise HTTPException(409,'仅已完成结果可以批准')
-    j.approved=True; record(db,u.email,'job.approve',{'id':id}); db.commit()
+    j=jobs.approve(db, j)
+    record(db,u.email,'job.approve',{'id':id,'constraint_version_id':j.constraint_version_id}); db.commit()
     return job_dict(j)

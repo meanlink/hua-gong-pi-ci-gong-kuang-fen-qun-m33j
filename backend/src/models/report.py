@@ -10,6 +10,8 @@ class Report(Base):
     interval_seconds: Mapped[int]
     next_run: Mapped[float] = mapped_column(Double)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 约束换版后自动暂停的简报保留原因，便于页面说明为何停止。
+    disabled_reason: Mapped[str] = mapped_column(String(1000), default='')
 class Delivery(Base):
     __tablename__ = 'deliveries'
     id: Mapped[int] = mapped_column(primary_key=True)

@@ -3,8 +3,10 @@
 KMeans 聚类的真实业务分析小型项目。完整模拟客户、痛点、上下游、算法公式与一天工作剧本见 [BUSINESS.md](BUSINESS.md)。
 
 ## 模块与业务流程
-数据接入（JSON/CSV、字段验证、批次指纹）→ 参数化分析（异步 Python worker）→ 结果复核（指标、图形、明细、解释、批准）→ 定时分发（本地收件箱、CSV/JSON、SHA256）；另有业务总览和审计轨迹。
-三个贯穿全栈的实体：Dataset 数据批次、Job 分析任务、Report 分发计划；辅助 User、Audit、Delivery。
+数据接入（JSON/CSV、字段验证、批次指纹）→ 工艺约束版本（同群/互斥、校验、并发换版）→ 参数化分析（异步 Python worker，可绑定某约束版本）→ 结果复核（指标、图形、明细、归群依据、批准）→ 定时分发（本地收件箱、CSV/JSON、SHA256）；另有业务总览和审计轨迹。
+四个贯穿全栈的实体：Dataset 数据批次、ConstraintVersion 工艺评审约束版本、Job 分析任务、Report 分发计划；辅助 User、Audit、Delivery。
+
+约束版本不可变，每个数据集只有一个现行版本。换版后绑定旧版的分析统一失效（运行中结果拒收、已批准撤回、简报暂停）；无约束分析保持原口径可用。约束分群在满足全部同群/互斥关系的前提下尽量贴近无约束 KMeans 目标，保证每群非空，并把“已证明无解”与“搜索超时”分开呈现。详见 [BUSINESS.md](BUSINESS.md)。
 
 ## 快速启动
 ```bash
@@ -18,8 +20,8 @@ docker compose exec -T backend python -m scripts.seed_demo
 ## 演示账号与权限
 |账号|密码|真实权限|
 |---|---|---|
-|admin@demo.local|Demo123!|接入、执行、批准、分发、暂停、读取与下载|
-|analyst@demo.local|Demo123!|接入、执行、读取与下载；不能批准或安排分发|
+|admin@demo.local|Demo123!|接入、执行、维护约束版本、批准、分发、暂停、读取与下载|
+|analyst@demo.local|Demo123!|接入、执行、维护约束版本、读取与下载；不能批准或安排分发|
 |viewer@demo.local|Demo123!|只读与下载|
 
 ## 技术与本地开发
@@ -29,10 +31,11 @@ Python 3.12 / FastAPI / SQLAlchemy / NumPy / SciPy / scikit-learn；MySQL 8.0；
 ## 目录与工程约定
 backend/src/{models,schemas,services,routes,controllers,middlewares,constants,config,utils}；backend/scripts/seed_demo.py；backend/migrations/initial.py。
 frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}。
-Role 枚举：admin/analyst/viewer；JobStatus：queued/running/completed/failed。后端 backend/src/constants/enums.py，前端 frontend/src/constants/enums.js；路由权限在 middlewares/auth.py；页面按相同角色控制操作入口。
+Role 枚举：admin/analyst/viewer；JobStatus：queued/running/completed/failed/invalidated。后端 backend/src/constants/enums.py，前端 frontend/src/constants/enums.js；路由权限在 middlewares/auth.py；页面按相同角色控制操作入口。
+约束接口：`GET/POST /datasets/{id}/constraint-versions`、`POST /datasets/{id}/constraint-versions/validate`、`GET /datasets/{id}/constraint-versions/{vid}`、`GET /datasets/{id}/jobs`（归群依据与失效原因）。换版支持 `Idempotency-Key` 头与 `base_version_id` 乐观并发。
 
 ## 环境变量与 Docker
-COMPOSE_PROJECT_NAME=batch-clusters；FRONTEND_PORT=18209；BACKEND_PORT=19209；DB_PORT=17709；DB_PASSWORD、JWT_SECRET 见 .env.example；SEED_DEMO 默认 true。共享命名产物卷供后端下载与 worker 写入，数据库/Redis 各持久卷。
+COMPOSE_PROJECT_NAME=batch-clusters；FRONTEND_PORT=18209；BACKEND_PORT=19209；DB_PORT=17709；DB_PASSWORD、JWT_SECRET 见 .env.example；SEED_DEMO 默认 true。共享命名产物卷供后端下载与 worker 写入，数据库/Redis 各持久卷。约束搜索预算可用 `CONSTRAINT_SEARCH_TIMEOUT_SECONDS`（默认 8）与 `CONSTRAINT_SEARCH_NODE_LIMIT`（默认 200000）调整。
 恰好五服务均有健康检查。Redis 队列加 SQL 排队状态兜底；worker 按 next_run 生成本地收件箱文件。周期 60 秒至 30 天。分发结果为批准分析的固定快照；若需新数据重新计算并建立新计划。当前不连接邮件或企业聊天。
 错误响应、请求编号、Redis 每 IP 每分钟 240 次限流、JWT 和数据库操作审计。演示密钥与密码仅供本机模拟；生产部署前配置独立密钥与账号。
 

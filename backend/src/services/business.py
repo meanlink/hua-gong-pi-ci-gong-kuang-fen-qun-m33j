@@ -40,7 +40,7 @@ def seed_records():
     return rows
 
 
-def analyze(records, params):
+def parse_k(params):
     try:
         raw_k = float(params.get("clusters", 3))
         k = int(raw_k)
@@ -48,6 +48,11 @@ def analyze(records, params):
         raise ValueError("K须为2~6的整数。") from exc
     if raw_k != k or not 2 <= k <= 6:
         raise ValueError("K须为2~6的整数。")
+    return k
+
+
+def prepare_matrix(records, k):
+    """无约束、约束两条路径共享的输入边界校验。"""
     if len(records) < max(30, k * 5):
         raise ValueError("至少需要30条记录，且每个候选族群平均至少5条。")
     try:
@@ -58,6 +63,27 @@ def analyze(records, params):
         raise ValueError("工况须为有限值，釜压与停留时间须正数，收率须0~100。")
     if np.unique(x, axis=0).shape[0] < k or np.std(x, axis=0).min() < 1e-9:
         raise ValueError("需要至少K种不同工况，且四个特征均须有变化。")
+    return x
+
+
+def analyze(records, params, constraint_version=None):
+    """无约束分析保持不变；传入约束版本时转交约束聚类。"""
+    if constraint_version is not None:
+        from src.services.constraints import analyze_constrained
+        k = parse_k(params)
+        prepare_matrix(records, k)
+        return analyze_constrained(
+            records, params, k,
+            constraint_version.must_links,
+            constraint_version.cannot_links,
+            version_meta={
+                "version_id": constraint_version.id,
+                "version": constraint_version.version,
+                "constraint_hash": constraint_version.constraint_hash,
+            },
+        )
+    k = parse_k(params)
+    x = prepare_matrix(records, k)
     scaler = StandardScaler()
     z = scaler.fit_transform(x)
     model = KMeans(n_clusters=k, n_init=20, random_state=42)

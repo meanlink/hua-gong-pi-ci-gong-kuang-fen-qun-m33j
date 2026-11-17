@@ -2,11 +2,15 @@ import time, json
 from sqlalchemy import select, func
 from src.config.database import Session
 from migrations.initial import migrate
-from src.models import User, Dataset, Job, Report, Delivery, Audit
+from src.models import User, Dataset, Job, Report, Delivery, Audit, ConstraintVersion
 from src.services.business import metadata, seed_records, analyze
 from src.services.reports import deliver
 from src.utils.security import hash_password
 from src.utils.serialization import checksum
+from src.services import constraints
+from src.schemas.constraint import ConstraintVersionInput
+
+
 def seed():
     migrate()
     with Session() as db:
@@ -21,18 +25,43 @@ def seed():
             rows=seed_records()
             d=Dataset(name=m['dataset_name'],source=m['short']+'-202611.csv',records=rows,checksum=checksum(rows),created_at=time.time())
             db.add(d); db.flush()
+        admin=db.scalar(select(User).where(User.role=='admin'))
+        # 演示约束版本：同群与互斥各取几对真实批次，便于页面直接体验。
+        if d.active_constraint_version_id is None and not db.scalar(
+                select(ConstraintVersion).where(ConstraintVersion.dataset_id==d.id)):
+            ids=[row['batch_id'] for row in d.records]
+            payload=ConstraintVersionInput(
+                dataset_id=d.id,
+                must_links=[[ids[0], ids[1]], [ids[60], ids[61]]],
+                cannot_links=[[ids[0], ids[120]]],
+                note='演示：QH-001/002 同群、QH-061/062 同群、QH-001 与 QH-121 互斥',
+            )
+            version,_=constraints.create_version(db, payload, admin, 'demo-constraint-v1')
+            db.commit()
+            d=db.get(Dataset,d.id)
         if not db.scalar(select(Job).where(Job.name=='基线复核 · '+m['name'])):
             params={p['key']:p['default'] for p in m.get('parameters',[])}
             result=analyze(d.records,params)
             json.dumps(result,ensure_ascii=False,allow_nan=False)
-            admin=db.scalar(select(User).where(User.role=='admin'))
             j=Job(name='基线复核 · '+m['name'],dataset_id=d.id,params=params,status='completed',result=result,created_by=admin.id,created_at=time.time()-3600,finished_at=time.time()-3595,approved=True)
             db.add(j);db.flush()
             r=Report(name='每日业务复核简报',job_id=j.id,destination='业务复核组 · 本地收件箱',interval_seconds=86400,next_run=time.time()+86400,enabled=True)
             db.add(r);db.flush();deliver(db,r)
             db.add(Audit(actor='seed',action='demo.baseline',detail={'dataset':d.id},at=time.time()))
+        if d.active_constraint_version_id is not None and not db.scalar(
+                select(Job).where(Job.name=='约束复核 · '+m['name'])):
+            version=db.get(ConstraintVersion, d.active_constraint_version_id)
+            params={p['key']:p['default'] for p in m.get('parameters',[])}
+            result=analyze(d.records,params,version)
+            json.dumps(result,ensure_ascii=False,allow_nan=False)
+            j=Job(name='约束复核 · '+m['name'],dataset_id=d.id,params=params,status='completed',result=result,
+                  created_by=admin.id,created_at=time.time()-1800,finished_at=time.time()-1795,approved=False,
+                  constraint_version_id=version.id,constraint_version=version.version,constraint_hash=version.constraint_hash)
+            db.add(j);db.flush()
+            db.add(Audit(actor='seed',action='demo.constraint_baseline',
+                         detail={'dataset':d.id,'version':version.version},at=time.time()))
         db.commit()
-        counts={model.__tablename__:db.scalar(select(func.count()).select_from(model)) for model in [User,Dataset,Job,Report,Delivery,Audit]}
+        counts={model.__tablename__:db.scalar(select(func.count()).select_from(model)) for model in [User,Dataset,ConstraintVersion,Job,Report,Delivery,Audit]}
         print(json.dumps(counts,ensure_ascii=False))
         return counts
 if __name__=='__main__':seed()

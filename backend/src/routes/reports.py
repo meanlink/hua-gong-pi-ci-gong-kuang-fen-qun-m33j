@@ -22,7 +22,25 @@ def create(data:ReportInput,db=Depends(get_db),u=Depends(admin_only)):
 def toggle(id:int,db=Depends(get_db),u=Depends(admin_only)):
     r=db.get(Report,id)
     if not r:raise HTTPException(404,'分发计划不存在')
-    r.enabled=not r.enabled;record(db,u.email,'report.toggle',{'id':id,'enabled':r.enabled});db.commit()
+    from src.models import Job
+    from src.services.constraints import job_is_current, serialized_dataset_write
+    j=db.get(Job,r.job_id)
+    if not r.enabled:
+        # 重新启用前核对绑定结果仍有效，避免把失效快照恢复分发。
+        if not j or not j.approved or j.invalidated_at is not None or not job_is_current(db,j):
+            raise HTTPException(409, r.disabled_reason or '绑定分析已失效，请重新计算并新建分发计划')
+    # 与换版共用数据行锁，避免“启用”与“换版停用”交错。
+    with serialized_dataset_write(db, j.dataset_id if j else 0):
+        db.expire_all()
+        r=db.get(Report,id)
+        if r.enabled and j:
+            # 关停方向：直接停用并保留原因。
+            r.enabled=False
+        else:
+            r.enabled=True
+            r.disabled_reason=''
+        record(db,u.email,'report.toggle',{'id':id,'enabled':r.enabled})
+        db.commit()
     return report_dict(r)
 @router.get('/deliveries')
 def deliveries(db=Depends(get_db),u=Depends(current_user)):
